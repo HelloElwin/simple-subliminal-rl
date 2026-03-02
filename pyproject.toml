@@ -1,0 +1,15 @@
+[project]
+name = "simple-subliminal-rl"
+version = "0.1.0"
+description = "Subliminal RL in simple environments"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.1",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+subliminal-rl = "subliminal_rl.run:main"
