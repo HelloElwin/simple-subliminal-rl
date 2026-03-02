@@ -35,19 +35,29 @@ Grid (7x7 ints)
   └─→ Critic: Linear(256, 256) → ReLU → Linear(256, 1)  [state value]
 ```
 
-All linear layers use orthogonal initialisation. A CNN backbone is also available.
+All linear layers use orthogonal initialization. A CNN backbone is also available.
 
 ## Running
 
 Requires Python >= 3.12 and `uv`. Example:
 
 ```bash
+# Basic run
+uv run python -m subliminal_rl.run \
+  --num-seeds 1 \
+  --teacher-steps 10_000_000 \
+  --student-steps 10_000_000 \
+  --backbone mlp \
+  --use-embedding
+
+# Full run
 uv run python -m subliminal_rl.run \
   --num-seeds 4 \
   --teacher-steps 10_000_000 \
   --student-steps 10_000_000 \
   --backbone mlp \
-  --use-embedding
+  --use-embedding \
+  --controls c1,c3,c4,c5
 ```
 
 Results (plots, CSVs, config) are saved to `exp/`.

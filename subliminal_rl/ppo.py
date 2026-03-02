@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from .env import VecGridEnv
+from .env import BatchGridEnv
 from .model import ActorCritic
 
 
@@ -60,7 +60,7 @@ def compute_gae(rewards, values, dones, next_value, gamma, gae_lambda):
 
 def train_ppo(
     agent: ActorCritic,
-    vec_env: VecGridEnv,
+    vec_env: BatchGridEnv,
     total_steps: int,
     config: Config,
     teacher: ActorCritic | None = None,
@@ -108,6 +108,23 @@ def train_ppo(
     global_step = 0
     log = []
     eval_interval = max(1, num_updates // 20)
+
+    # Eval at step 0 (before training)
+    if eval_fn is not None:
+        result = eval_fn(agent)
+        goal_strs = [f"{k}={v:.0%}" for k, v in result.items() if k != "NONE"]
+        none_str = f"NONE={result.get('NONE', 0):.0%}"
+        print(f"  [{label}] step {global_step:>6d}: {', '.join(goal_strs)}, {none_str}")
+        log.append(
+            {
+                "step": global_step,
+                "mean_reward": 0.0,
+                "pg_loss": 0.0,
+                "v_loss": 0.0,
+                "entropy": 0.0,
+                **{k: v for k, v in result.items()},
+            }
+        )
 
     for update in tqdm(range(num_updates), desc=label, unit="update"):
         # LR annealing

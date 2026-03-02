@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--grid-size", type=int, default=7)
     parser.add_argument("--wall-density", type=float, default=0.1)
     parser.add_argument("--max-episode-steps", type=int, default=50)
-    parser.add_argument("--num-envs", type=int, default=64, help="Number of parallel environments per training run")
+    parser.add_argument("--num-envs", type=int, default=128, help="Number of parallel environments per training run")
     parser.add_argument("--lr", type=float, default=7e-4, help="Learning rate")
     parser.add_argument("--entropy-coef", type=float, default=0.1)
     parser.add_argument("--step-level-reward", action="store_true", help="(default: trajectory-level)")

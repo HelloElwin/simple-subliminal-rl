@@ -34,6 +34,8 @@ NUM_ACTIONS = 4
 # Actions: 0=up, 1=down, 2=left, 3=right (row, col deltas)
 ACTION_DR = [-1, 1, 0, 0]
 ACTION_DC = [0, 0, -1, 1]
+ACTION_DR_ARR = np.array(ACTION_DR, dtype=np.int64)
+ACTION_DC_ARR = np.array(ACTION_DC, dtype=np.int64)
 
 
 class GridEnv:
@@ -215,53 +217,251 @@ class GridEnv:
 
 
 # ============================================================
-# Vectorized Environment
+# Batched (numpy-vectorized) Environment
 # ============================================================
 
 
-class VecGridEnv:
-    """Vectorized wrapper: steps N GridEnvs, returns batched numpy arrays.
+def _generate_grid(
+    grid_size: int,
+    wall_density: float,
+    goal_types: list[int],
+    filler_types: list[int],
+    filler_density: float,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, int, int, set[tuple[int, int]]] | None:
+    """Generate a single random grid layout.
 
-    Auto-resets envs on termination (standard VecEnv convention).
+    Returns (grid, agent_row, agent_col, goal_coords) or None if invalid.
+    """
+    grid = np.zeros((grid_size, grid_size), dtype=np.int64)
+
+    # Place walls
+    n_cells = grid_size * grid_size
+    n_walls = int(n_cells * wall_density)
+    all_positions = np.arange(n_cells)
+    rng.shuffle(all_positions)
+    wall_flat = all_positions[:n_walls]
+    grid.ravel()[wall_flat] = CellType.WALL
+
+    # Collect empty cells
+    empty_flat = np.where(grid.ravel() == CellType.EMPTY)[0]
+    rng.shuffle(empty_flat)
+
+    needed = 1 + len(goal_types)
+    if len(empty_flat) < needed:
+        return None
+
+    # Place agent
+    agent_flat = empty_flat[0]
+    agent_row, agent_col = divmod(int(agent_flat), grid_size)
+
+    # Place goals
+    goal_coords = set()
+    for i, gtype in enumerate(goal_types):
+        gf = empty_flat[1 + i]
+        grid.ravel()[gf] = gtype
+        gr, gc = divmod(int(gf), grid_size)
+        goal_coords.add((gr, gc))
+
+    # Place fillers
+    if len(filler_types) > 0:
+        remaining = empty_flat[needed:]
+        # Exclude agent position
+        remaining = remaining[remaining != agent_flat]
+        n_fill = int(len(remaining) * filler_density)
+        if n_fill > 0:
+            fill_positions = remaining[:n_fill]
+            filler_vals = rng.choice(filler_types, size=n_fill)
+            grid.ravel()[fill_positions] = filler_vals
+
+    # BFS reachability check
+    if not _bfs_reachable(grid, grid_size, agent_row, agent_col, goal_coords):
+        return None
+
+    return grid, agent_row, agent_col, goal_coords
+
+
+def _bfs_reachable(
+    grid: np.ndarray, grid_size: int, start_r: int, start_c: int, targets: set[tuple[int, int]]
+) -> bool:
+    """BFS from start. Returns True if all targets are reachable."""
+    if not targets:
+        return True
+    visited = set()
+    visited.add((start_r, start_c))
+    queue = deque([(start_r, start_c)])
+    remaining = set(targets)
+
+    while queue and remaining:
+        r, c = queue.popleft()
+        if (r, c) in remaining:
+            remaining.discard((r, c))
+            if not remaining:
+                return True
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if (
+                0 <= nr < grid_size
+                and 0 <= nc < grid_size
+                and (nr, nc) not in visited
+                and grid[nr, nc] != CellType.WALL
+            ):
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+
+    return len(remaining) == 0
+
+
+class BatchGridEnv:
+    """Numpy-vectorized batched grid environment.
+
+    All N environments are stored as batched arrays and stepped simultaneously.
+    Auto-resets envs on termination.
     """
 
-    def __init__(self, env_fns: list[callable]):
-        self.envs = [fn() for fn in env_fns]
-        self.num_envs = len(self.envs)
+    def __init__(
+        self,
+        num_envs: int,
+        grid_size: int = 7,
+        wall_density: float = 0.1,
+        goal_types: list[CellType] | None = None,
+        goal_rewards: dict[CellType, float] | None = None,
+        max_steps: int = 100,
+        base_seed: int = 0,
+        filler_types: list[CellType] | None = None,
+        filler_density: float = 0.5,
+    ):
+        self.num_envs = num_envs
+        self.grid_size = grid_size
+        self.wall_density = wall_density
+        self.goal_types = goal_types or [CellType.RED, CellType.BLUE, CellType.GREEN]
+        self.goal_rewards = goal_rewards or {}
+        self.max_steps = max_steps
+        self.filler_types = filler_types or []
+        self.filler_density = filler_density
+
+        # Per-env RNGs (needed for grid generation on reset)
+        self.rngs = [np.random.default_rng(base_seed + i) for i in range(num_envs)]
+
+        # Precompute for vectorized goal/reward checks
+        self._goal_type_vals = np.array([int(g) for g in self.goal_types], dtype=np.int64)
+        self._filler_type_vals = np.array([int(f) for f in self.filler_types], dtype=np.int64)
+        # Reward lookup: indexed by cell type value
+        self._reward_lookup = np.zeros(NUM_CELL_TYPES, dtype=np.float32)
+        for gtype, rew in self.goal_rewards.items():
+            self._reward_lookup[int(gtype)] = rew
+
+        # Batched state arrays
+        self.grids = np.zeros((num_envs, grid_size, grid_size), dtype=np.int64)
+        self.agent_rows = np.zeros(num_envs, dtype=np.int64)
+        self.agent_cols = np.zeros(num_envs, dtype=np.int64)
+        self.step_counts = np.zeros(num_envs, dtype=np.int64)
+
+        # Precompute env index array
+        self._env_idx = np.arange(num_envs)
 
     def reset(self) -> tuple[np.ndarray, list[dict]]:
         """Reset all envs. Returns (obs, infos) with obs shape (N, H, W) int64."""
-        obs_list, info_list = [], []
-        for env in self.envs:
-            obs, info = env.reset()
-            obs_list.append(obs)
-            info_list.append(info)
-        return np.stack(obs_list), info_list
+        infos = []
+        for i in range(self.num_envs):
+            info = self._reset_single(i)
+            infos.append(info)
+        return self._obs(), infos
+
+    def _reset_single(self, i: int) -> dict:
+        """Generate a new grid for env i. Returns info dict."""
+        rng = self.rngs[i]
+        goal_type_ints = [int(g) for g in self.goal_types]
+
+        for _ in range(50):
+            result = _generate_grid(
+                self.grid_size, self.wall_density, goal_type_ints,
+                self._filler_type_vals, self.filler_density, rng,
+            )
+            if result is not None:
+                grid, agent_row, agent_col, goal_coords = result
+                self.grids[i] = grid
+                self.agent_rows[i] = agent_row
+                self.agent_cols[i] = agent_col
+                self.step_counts[i] = 0
+                return {}
+
+        # Fallback: no walls
+        grid = np.zeros((self.grid_size, self.grid_size), dtype=np.int64)
+        empty_flat = np.arange(self.grid_size * self.grid_size)
+        rng.shuffle(empty_flat)
+        agent_flat = empty_flat[0]
+        agent_row, agent_col = divmod(int(agent_flat), self.grid_size)
+        for j, gtype in enumerate(goal_type_ints):
+            gf = empty_flat[1 + j]
+            grid.ravel()[gf] = gtype
+        if self._filler_type_vals.size > 0:
+            needed = 1 + len(goal_type_ints)
+            remaining = empty_flat[needed:]
+            remaining = remaining[remaining != agent_flat]
+            n_fill = int(len(remaining) * self.filler_density)
+            if n_fill > 0:
+                grid.ravel()[remaining[:n_fill]] = rng.choice(self._filler_type_vals, size=n_fill)
+        self.grids[i] = grid
+        self.agent_rows[i] = agent_row
+        self.agent_cols[i] = agent_col
+        self.step_counts[i] = 0
+        return {}
 
     def step(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[dict]]:
-        """Step all envs. Auto-resets on done.
+        """Step all envs with vectorized numpy ops. Auto-resets on done."""
+        H = self.grid_size
+        N = self.num_envs
+        idx = self._env_idx
 
-        Returns (obs, rewards, terminateds, truncateds, infos).
-        """
-        obs_list, rew_list, term_list, trunc_list, info_list = [], [], [], [], []
-        for i, env in enumerate(self.envs):
-            obs, rew, terminated, truncated, info = env.step(int(actions[i]))
-            if terminated or truncated:
-                new_obs, _ = env.reset()
-                info["terminal_observation"] = obs
-                obs = new_obs
-            obs_list.append(obs)
-            rew_list.append(rew)
-            term_list.append(terminated)
-            trunc_list.append(truncated)
-            info_list.append(info)
-        return (
-            np.stack(obs_list),
-            np.array(rew_list, dtype=np.float32),
-            np.array(term_list, dtype=np.bool_),
-            np.array(trunc_list, dtype=np.bool_),
-            info_list,
-        )
+        # 1. Compute new positions
+        new_r = self.agent_rows + ACTION_DR_ARR[actions]
+        new_c = self.agent_cols + ACTION_DC_ARR[actions]
+
+        # 2. Bounds check
+        in_bounds = (new_r >= 0) & (new_r < H) & (new_c >= 0) & (new_c < H)
+
+        # 3. Wall check (clip for safe indexing, masked by in_bounds)
+        safe_r = np.clip(new_r, 0, H - 1)
+        safe_c = np.clip(new_c, 0, H - 1)
+        not_wall = self.grids[idx, safe_r, safe_c] != CellType.WALL
+
+        # 4. Update positions where valid
+        valid = in_bounds & not_wall
+        self.agent_rows = np.where(valid, new_r, self.agent_rows)
+        self.agent_cols = np.where(valid, new_c, self.agent_cols)
+        self.step_counts += 1
+
+        # 5. Check goals
+        cells = self.grids[idx, self.agent_rows, self.agent_cols]
+        terminated = np.isin(cells, self._goal_type_vals)
+        truncated = (~terminated) & (self.step_counts >= self.max_steps)
+        dones = terminated | truncated
+
+        # 6. Rewards via lookup table
+        rewards = self._reward_lookup[cells]
+
+        # 7. Build infos for terminated envs
+        infos: list[dict] = [{} for _ in range(N)]
+        term_indices = np.where(terminated)[0]
+        for i in term_indices:
+            infos[i] = {"goal_reached": CellType(int(cells[i])).name}
+
+        # 8. Auto-reset done envs
+        done_indices = np.where(dones)[0]
+        if len(done_indices) > 0:
+            obs = self._obs()
+            for i in done_indices:
+                infos[int(i)]["terminal_observation"] = obs[i]
+                self._reset_single(int(i))
+
+        return self._obs(), rewards, terminated, truncated, infos
+
+    def _obs(self) -> np.ndarray:
+        """Build batched observation (N, H, W) int64 with agent positions overlaid."""
+        obs = self.grids.copy()
+        obs[self._env_idx, self.agent_rows, self.agent_cols] = CellType.AGENT
+        return obs
 
 
 # ============================================================
@@ -323,15 +523,16 @@ def make_vec_env_a(
     goal_rewards: dict[CellType, float] | None = None,
     base_seed: int = 0,
     filler_density: float = 0.5,
-) -> VecGridEnv:
-    """Create vectorized Env A with num_envs parallel instances."""
-    def _make(i):
-        return lambda: make_env_a(
-            grid_size=grid_size, wall_density=wall_density, max_steps=max_steps,
-            goal_rewards=goal_rewards, rng=np.random.default_rng(base_seed + i),
-            filler_density=filler_density,
-        )
-    return VecGridEnv([_make(i) for i in range(num_envs)])
+) -> BatchGridEnv:
+    """Create batched Env A with num_envs instances."""
+    if goal_rewards is None:
+        goal_rewards = {CellType.RED: 1.0, CellType.BLUE: 0.0, CellType.GREEN: 0.0}
+    return BatchGridEnv(
+        num_envs=num_envs, grid_size=grid_size, wall_density=wall_density,
+        goal_types=[CellType.RED, CellType.BLUE, CellType.GREEN],
+        goal_rewards=goal_rewards, max_steps=max_steps, base_seed=base_seed,
+        filler_types=FILLERS_A, filler_density=filler_density,
+    )
 
 
 def make_vec_env_b(
@@ -342,12 +543,13 @@ def make_vec_env_b(
     goal_rewards: dict[CellType, float] | None = None,
     base_seed: int = 0,
     filler_density: float = 0.5,
-) -> VecGridEnv:
-    """Create vectorized Env B with num_envs parallel instances."""
-    def _make(i):
-        return lambda: make_env_b(
-            grid_size=grid_size, wall_density=wall_density, max_steps=max_steps,
-            goal_rewards=goal_rewards, rng=np.random.default_rng(base_seed + i),
-            filler_density=filler_density,
-        )
-    return VecGridEnv([_make(i) for i in range(num_envs)])
+) -> BatchGridEnv:
+    """Create batched Env B with num_envs instances."""
+    if goal_rewards is None:
+        goal_rewards = {CellType.ALPHA: 0.0, CellType.BETA: 0.0, CellType.GAMMA: 0.0}
+    return BatchGridEnv(
+        num_envs=num_envs, grid_size=grid_size, wall_density=wall_density,
+        goal_types=[CellType.ALPHA, CellType.BETA, CellType.GAMMA],
+        goal_rewards=goal_rewards, max_steps=max_steps, base_seed=base_seed,
+        filler_types=FILLERS_B, filler_density=filler_density,
+    )
