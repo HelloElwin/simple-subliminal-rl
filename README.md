@@ -39,25 +39,39 @@ All linear layers use orthogonal initialization. A CNN backbone is also availabl
 
 ## Running
 
-Requires Python >= 3.12 and `uv`. Example:
+Requires Python >= 3.12 and `uv`. Configuration is managed with [Hydra](https://hydra.cc/). Config files live in `configs/` with groups for `model`, `env`, `training`, `reward`, and `experiment`.
 
 ```bash
-# Basic run
-uv run python -m subliminal_rl.run \
-  --num-seeds 1 \
-  --teacher-steps 10_000_000 \
-  --student-steps 10_000_000 \
-  --backbone mlp \
-  --use-embedding
+# Default run (trajectory reward, MLP, 5 seeds, 10M steps)
+uv run python -m subliminal_rl.run
 
-# Full run
-uv run python -m subliminal_rl.run \
-  --num-seeds 4 \
-  --teacher-steps 10_000_000 \
-  --student-steps 10_000_000 \
-  --backbone mlp \
-  --use-embedding \
-  --controls c1,c3,c4,c5
+# Quick test (1 seed, 100k steps)
+uv run python -m subliminal_rl.run experiment=quick
+
+# Override individual settings
+uv run python -m subliminal_rl.run model.use_embedding=true training.lr=3e-4
+
+# Switch config groups
+uv run python -m subliminal_rl.run model=cnn reward=step
+
+# Run with all controls
+uv run python -m subliminal_rl.run experiment.controls='[c1,c3,c4,c5]'
 ```
 
-Results (plots, CSVs, config) are saved to `exp/`.
+### Sweeps
+
+Use `--multirun` to sweep over multiple values (grid search):
+
+```bash
+# Learning rate sweep
+uv run python -m subliminal_rl.run --multirun training.lr=1e-3,7e-4,3e-4,1e-4
+
+# Architecture sweep
+uv run python -m subliminal_rl.run --multirun \
+  model.hidden_dim=64,128,256,512 model.num_hidden_layers=1,2,3
+
+# Reward mechanism comparison
+uv run python -m subliminal_rl.run --multirun reward=step,trajectory,value
+```
+
+Results (plots, CSVs) are saved to `exp/<timestamp>/`. The full resolved config is automatically saved to `.hydra/config.yaml` in each run directory.
