@@ -7,8 +7,6 @@ from torch.distributions import Categorical
 
 from .env import NUM_ACTIONS, NUM_CELL_TYPES
 
-EMBED_DIM = 4
-
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     nn.init.orthogonal_(layer.weight, std)
@@ -21,10 +19,12 @@ class ActorCritic(nn.Module):
         self,
         grid_size: int = 7,
         num_cell_types: int = NUM_CELL_TYPES,
-        embed_dim: int = EMBED_DIM,
+        embed_dim: int = 4,
         num_actions: int = NUM_ACTIONS,
         backbone: str = "mlp",
         use_embedding: bool = False,
+        hidden_dim: int = 256,
+        num_hidden_layers: int = 2,
     ):
         super().__init__()
         self.grid_size = grid_size
@@ -39,36 +39,62 @@ class ActorCritic(nn.Module):
             self.input_dim = 1  # raw scalar per cell
 
         if backbone == "cnn":
-            self.conv = nn.Sequential(
+            conv_layers = [
                 layer_init(nn.Conv2d(self.input_dim, 32, 3, padding=1)),
                 nn.ReLU(),
-                layer_init(nn.Conv2d(32, 64, 3, padding=1)),
-                nn.ReLU(),
-            )
-            flat_dim = 64 * grid_size * grid_size
+            ]
+            in_channels = 32
+            for _ in range(num_hidden_layers - 1):
+                conv_layers.extend([
+                    layer_init(nn.Conv2d(in_channels, 64, 3, padding=1)),
+                    nn.ReLU(),
+                ])
+                in_channels = 64
+            self.conv = nn.Sequential(*conv_layers)
+            flat_dim = in_channels * grid_size * grid_size
         elif backbone == "mlp":
-            mlp_input = grid_size * grid_size * self.input_dim
-            self.mlp = nn.Sequential(
-                layer_init(nn.Linear(mlp_input, 256)),
-                nn.ReLU(),
-                layer_init(nn.Linear(256, 256)),
-                nn.ReLU(),
-            )
-            flat_dim = 256
+            layers = []
+            in_dim = grid_size * grid_size * self.input_dim
+            for _ in range(num_hidden_layers):
+                layers.extend([layer_init(nn.Linear(in_dim, hidden_dim)), nn.ReLU()])
+                in_dim = hidden_dim
+            self.mlp = nn.Sequential(*layers)
+            flat_dim = hidden_dim
         else:
             raise ValueError(f"Unknown backbone: {backbone!r}")
 
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(flat_dim, 256)),
+            layer_init(nn.Linear(flat_dim, hidden_dim)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, num_actions), std=0.01),
+            layer_init(nn.Linear(hidden_dim, num_actions), std=0.01),
         )
 
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(flat_dim, 256)),
+            layer_init(nn.Linear(flat_dim, hidden_dim)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, 1), std=1.0),
+            layer_init(nn.Linear(hidden_dim, 1), std=1.0),
         )
+
+    def freeze_for_student(self, freeze_embedding: bool = False, freeze_layers: int = 0):
+        """Freeze parameters for student training (embedding and/or backbone layers)."""
+        if freeze_embedding and self.use_embedding:
+            for p in self.embed.parameters():
+                p.requires_grad = False
+
+        if freeze_layers > 0:
+            if self.backbone == "mlp":
+                # Each layer is (Linear, ReLU) = 2 modules per hidden layer
+                modules = list(self.mlp.children())
+                n_to_freeze = min(freeze_layers * 2, len(modules))
+                for mod in modules[:n_to_freeze]:
+                    for p in mod.parameters():
+                        p.requires_grad = False
+            elif self.backbone == "cnn":
+                modules = list(self.conv.children())
+                n_to_freeze = min(freeze_layers * 2, len(modules))
+                for mod in modules[:n_to_freeze]:
+                    for p in mod.parameters():
+                        p.requires_grad = False
 
     def _features(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features from grid input.
@@ -89,7 +115,7 @@ class ActorCritic(nn.Module):
                 x = x.unsqueeze(0)
             h = self.embed(x)  # (B, H, W, embed_dim)
         else:
-            # Raw integer grid → float, shape (B, H, W, 1)
+            # Raw integer grid -> float, shape (B, H, W, 1)
             if x.dim() == 2:
                 x = x.unsqueeze(0)
             h = x.float().unsqueeze(-1)
@@ -120,11 +146,24 @@ class ActorCritic(nn.Module):
 
 
 def create_model(
-    grid_size: int = 7, seed: int = 0, device: torch.device | None = None,
-    backbone: str = "mlp", use_embedding: bool = False,
+    grid_size: int = 7,
+    seed: int = 0,
+    device: torch.device | None = None,
+    backbone: str = "mlp",
+    use_embedding: bool = False,
+    embed_dim: int = 4,
+    hidden_dim: int = 256,
+    num_hidden_layers: int = 2,
 ) -> ActorCritic:
     torch.manual_seed(seed)
-    model = ActorCritic(grid_size=grid_size, backbone=backbone, use_embedding=use_embedding)
+    model = ActorCritic(
+        grid_size=grid_size,
+        backbone=backbone,
+        use_embedding=use_embedding,
+        embed_dim=embed_dim,
+        hidden_dim=hidden_dim,
+        num_hidden_layers=num_hidden_layers,
+    )
     if device is not None:
         model = model.to(device)
     return model

@@ -1,0 +1,8 @@
+teacher_steps: 100_000
+student_steps: 100_000
+num_seeds: 1
+seed: 0
+eval_episodes: 100
+noise_input: false
+controls:
+  - c1

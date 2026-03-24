@@ -2,33 +2,9 @@
 
 import csv
 import os
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-
-def make_output_dir(args) -> str:
-    """Create output directory: ./exp/<args>_<datetime>/"""
-    parts = [
-        args.backbone,
-        f"t{args.teacher_steps // 1000}k",
-        f"s{args.student_steps // 1000}k",
-        f"n{args.num_seeds}",
-    ]
-    all_controls = {"c1", "c3", "c4", "c5"}
-    controls = set() if args.controls.lower() == "none" else set(args.controls.lower().split(","))
-    if not controls:
-        parts.append("noctrl")
-    elif controls != all_controls:
-        parts.append("ctrl_" + "_".join(sorted(controls)))
-    if args.step_level_reward:
-        parts.append("steplvl")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dirname = "_".join(parts) + f"_{timestamp}"
-    path = os.path.join("exp", dirname)
-    os.makedirs(path, exist_ok=True)
-    return path
 
 
 def save_csv(output_dir: str, all_results: list[dict], all_curves: list[dict], seeds: list[int]):

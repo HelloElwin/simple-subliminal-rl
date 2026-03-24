@@ -1,107 +1,83 @@
-"""CLI entry point for subliminal RL experiments."""
+"""CLI entry point for subliminal RL experiments (Hydra-based)."""
 
-import argparse
-import json
-from dataclasses import asdict
+import os
 
+import hydra
 import torch
+from hydra.core.config_store import ConfigStore
+from omegaconf import OmegaConf
 
+from .config import (
+    Config,
+    EnvConfig,
+    ExperimentConfig,
+    ModelConfig,
+    RewardConfig,
+    TrainingConfig,
+)
 from .experiment import run_experiment
-from .plot import make_output_dir, print_results_table, save_csv, save_plot
-from .ppo import Config
+from .plot import print_results_table, save_csv, save_plot
+
+# Register structured configs for validation
+cs = ConfigStore.instance()
+cs.store(name="config_schema", node=Config)
+cs.store(group="model", name="mlp_schema", node=ModelConfig)
+cs.store(group="model", name="cnn_schema", node=ModelConfig)
+cs.store(group="env", name="default_schema", node=EnvConfig)
+cs.store(group="training", name="default_schema", node=TrainingConfig)
+cs.store(group="reward", name="trajectory_schema", node=RewardConfig)
+cs.store(group="reward", name="step_schema", node=RewardConfig)
+cs.store(group="reward", name="value_schema", node=RewardConfig)
+cs.store(group="experiment", name="default_schema", node=ExperimentConfig)
+cs.store(group="experiment", name="quick_schema", node=ExperimentConfig)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Subliminal RL Experiment")
-    parser.add_argument("--num-seeds", type=int, default=5)
-    parser.add_argument("--seed", type=int, default=0, help="Starting seed")
-    parser.add_argument("--teacher-steps", type=int, default=10_000_000)
-    parser.add_argument("--student-steps", type=int, default=10_000_000)
-    parser.add_argument("--grid-size", type=int, default=7)
-    parser.add_argument("--wall-density", type=float, default=0.1)
-    parser.add_argument("--max-episode-steps", type=int, default=50)
-    parser.add_argument("--num-envs", type=int, default=128, help="Number of parallel environments per training run")
-    parser.add_argument("--lr", type=float, default=7e-4, help="Learning rate")
-    parser.add_argument("--entropy-coef", type=float, default=0.1)
-    parser.add_argument("--step-level-reward", action="store_true", help="(default: trajectory-level)")
-    parser.add_argument("--backbone", choices=["mlp", "cnn"], default="mlp", help="Model backbone (default: mlp)")
-    parser.add_argument("--use-embedding", action="store_true", help="Learned embeddings vs. one-hot encoding")
-    parser.add_argument(
-        "--filler-density",
-        type=float,
-        default=0.5,
-        help="Fraction of empty cells to fill with filler types (default: 0.5)",
-    )
-    parser.add_argument(
-        "--noise-input",
-        action="store_true",
-        help="Use random Gaussian noise as input instead of env observations (ablation)",
-    )
-    parser.add_argument(
-        "--controls",
-        type=str,
-        default="c1",
-        help="Comma-separated controls to run: c1,c3,c4,c5 (default: c1 only). Use 'none' to skip all controls.",
-    )
-    parser.add_argument("--eval-episodes", type=int, default=1000)
-    args = parser.parse_args()
-
-    controls = set() if args.controls.lower() == "none" else set(args.controls.lower().split(","))
-
+@hydra.main(version_base=None, config_path="../configs", config_name="config")
+def main(cfg):
+    # Convert OmegaConf DictConfig to our structured Config dataclass
     config = Config(
-        lr=args.lr,
-        teacher_total_steps=args.teacher_steps,
-        student_total_steps=args.student_steps,
-        num_envs=args.num_envs,
-        grid_size=args.grid_size,
-        wall_density=args.wall_density,
-        max_episode_steps=args.max_episode_steps,
-        entropy_coef=args.entropy_coef,
-        step_level_reward=args.step_level_reward,
-        backbone=args.backbone,
-        use_embedding=args.use_embedding,
-        filler_density=args.filler_density,
-        noise_input=args.noise_input,
-        num_seeds=args.num_seeds,
-        eval_episodes=args.eval_episodes,
-        controls=controls,
+        model=ModelConfig(**OmegaConf.to_container(cfg.model, resolve=True)),
+        env=EnvConfig(**OmegaConf.to_container(cfg.env, resolve=True)),
+        training=TrainingConfig(**OmegaConf.to_container(cfg.training, resolve=True)),
+        reward=RewardConfig(**OmegaConf.to_container(cfg.reward, resolve=True)),
+        experiment=ExperimentConfig(**OmegaConf.to_container(cfg.experiment, resolve=True)),
     )
 
-    output_dir = make_output_dir(args)
+    # Hydra changes cwd to output dir automatically
+    output_dir = os.getcwd()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("Subliminal RL Experiment")
-    print(f"  Teacher steps: {config.teacher_total_steps}")
-    print(f"  Student steps: {config.student_total_steps}")
-    print(f"  Grid size: {config.grid_size}")
-    print(f"  Wall density: {config.wall_density}")
-    print(f"  Max episode steps: {config.max_episode_steps}")
-    print(f"  Num envs: {config.num_envs}")
-    print(f"  Batch size: {config.num_steps * config.num_envs}")
-    print(f"  Backbone: {config.backbone}")
-    print(f"  Embedding: {'learned' if config.use_embedding else 'one-hot'}")
-    print(f"  Filler density: {config.filler_density}")
-    print(f"  Noise input: {config.noise_input}")
-    print(f"  Reward mode: {'step-level' if config.step_level_reward else 'trajectory-level'}")
-    print(f"  Entropy coef: {config.entropy_coef}")
-    print(f"  Seeds: {config.num_seeds}")
+    print(f"  Teacher steps: {config.experiment.teacher_steps}")
+    print(f"  Student steps: {config.experiment.student_steps}")
+    print(f"  Grid size: {config.env.grid_size}")
+    print(f"  Wall density: {config.env.wall_density}")
+    print(f"  Max episode steps: {config.env.max_episode_steps}")
+    print(f"  Num envs: {config.training.num_envs}")
+    print(f"  Batch size: {config.training.num_steps * config.training.num_envs}")
+    print(f"  Backbone: {config.model.backbone}")
+    print(f"  Embedding: {'learned (dim=' + str(config.model.embed_dim) + ')' if config.model.use_embedding else 'one-hot'}")
+    print(f"  Hidden dim: {config.model.hidden_dim}")
+    print(f"  Hidden layers: {config.model.num_hidden_layers}")
+    print(f"  Filler density: {config.env.filler_density}")
+    print(f"  Noise input: {config.experiment.noise_input}")
+    print(f"  Reward mode: {config.reward.mode}")
+    print(f"  Reward temperature: {config.reward.temperature}")
+    print(f"  Entropy coef: {config.training.entropy_coef}")
+    print(f"  LR: {config.training.lr}")
+    print(f"  Seeds: {config.experiment.num_seeds}")
     print(f"  Device: {device}")
-    print(f"  Controls: {','.join(sorted(controls)) if controls else 'none'}")
+    print(f"  Controls: {','.join(sorted(config.experiment.controls)) if config.experiment.controls else 'none'}")
+    print(f"  Freeze embedding: {config.model.freeze_embedding}")
+    print(f"  Freeze layers: {config.model.freeze_layers}")
     print(f"  Output: {output_dir}")
 
-    config_dict = asdict(config)
-    config_dict["controls"] = sorted(config_dict["controls"])
-    config_dict["seed"] = args.seed
-    config_dict["device"] = str(device)
-    with open(f"{output_dir}/config.json", "w") as f:
-        json.dump(config_dict, f, indent=2)
-
-    seeds = [args.seed + i for i in range(config.num_seeds)]
+    seeds = [config.experiment.seed + i for i in range(config.experiment.num_seeds)]
 
     all_results = []
     all_curves = []
     for seed in seeds:
-        results, curves = run_experiment(seed, config, controls=controls)
+        results, curves = run_experiment(seed, config, controls=config.experiment.controls)
         all_results.append(results)
         all_curves.append(curves)
 

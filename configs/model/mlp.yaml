@@ -1,0 +1,7 @@
+backbone: mlp
+use_embedding: false
+embed_dim: 4
+hidden_dim: 256
+num_hidden_layers: 2
+freeze_embedding: false
+freeze_layers: 0

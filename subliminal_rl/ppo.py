@@ -1,43 +1,16 @@
 """PPO training loop with optional teacher logprob reward and vectorized envs."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
 
 import numpy as np
 import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from .config import Config, RewardConfig
 from .env import BatchGridEnv
 from .model import ActorCritic
-
-
-@dataclass
-class Config:
-    lr: float = 7e-4
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_eps: float = 0.2
-    entropy_coef: float = 0.1
-    value_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    update_epochs: int = 4
-    num_minibatches: int = 4
-    num_steps: int = 128
-    num_envs: int = 64
-    grid_size: int = 7
-    wall_density: float = 0.1
-    max_episode_steps: int = 100
-    teacher_total_steps: int = 100_000
-    student_total_steps: int = 200_000
-    eval_episodes: int = 1000
-    num_seeds: int = 5
-    step_level_reward: bool = False
-    backbone: str = "mlp"
-    use_embedding: bool = False
-    filler_density: float = 0.5
-    noise_input: bool = False
-    controls: set[str] = field(default_factory=lambda: {"c1", "c3", "c4", "c5"})
+from .reward import compute_teacher_reward
 
 
 def compute_gae(rewards, values, dones, next_value, gamma, gae_lambda):
@@ -71,7 +44,7 @@ def train_ppo(
 ) -> tuple[ActorCritic, list[dict]]:
     """Train an agent with PPO using vectorized environments.
 
-    If teacher is provided, uses teacher logprobs as reward (step-level or trajectory-level).
+    If teacher is provided, uses teacher reward (logprobs or value) as reward.
     Otherwise uses environment reward.
 
     Returns (agent, log) where log is a list of dicts with training curve data.
@@ -79,18 +52,22 @@ def train_ppo(
     if device is None:
         device = next(agent.parameters()).device
 
+    tc = config.training
     num_envs = vec_env.num_envs
-    num_steps = config.num_steps
+    num_steps = tc.num_steps
     batch_size = num_steps * num_envs
-    minibatch_size = batch_size // config.num_minibatches
-    # total_steps counts env interactions across all envs
+    minibatch_size = batch_size // tc.num_minibatches
     num_updates = total_steps // batch_size
-    grid_size = config.grid_size
+    grid_size = config.env.grid_size
 
-    optimizer = torch.optim.Adam(agent.parameters(), lr=config.lr, eps=1e-5)
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, agent.parameters()),
+        lr=tc.lr,
+        eps=1e-5,
+    )
 
     # Rollout buffers
-    input_dim = agent.input_dim  # embed_dim or num_cell_types
+    input_dim = agent.input_dim
     if noise_input:
         obs_buf = torch.zeros(num_steps, num_envs, grid_size, grid_size, input_dim, device=device)
     else:
@@ -104,7 +81,7 @@ def train_ppo(
     if teacher is not None:
         teacher.eval()
 
-    obs, _infos = vec_env.reset()  # obs: (num_envs, H, W) int64
+    obs, _infos = vec_env.reset()
     global_step = 0
     log = []
     eval_interval = max(1, num_updates // 20)
@@ -129,7 +106,7 @@ def train_ppo(
     for update in tqdm(range(num_updates), desc=label, unit="update"):
         # LR annealing
         frac = 1.0 - update / num_updates
-        lr = config.lr * frac
+        lr = tc.lr * frac
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
@@ -138,14 +115,14 @@ def train_ppo(
             if noise_input:
                 obs_t = torch.randn(num_envs, grid_size, grid_size, input_dim, device=device)
             else:
-                obs_t = torch.from_numpy(obs).to(device)  # (num_envs, H, W) long
+                obs_t = torch.from_numpy(obs).to(device)
             obs_buf[step] = obs_t
 
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(obs_t)
-            act_buf[step] = action        # (num_envs,)
-            logprob_buf[step] = logprob   # (num_envs,)
-            value_buf[step] = value       # (num_envs,)
+            act_buf[step] = action
+            logprob_buf[step] = logprob
+            value_buf[step] = value
 
             obs, rewards, terminateds, truncateds, infos = vec_env.step(action.cpu().numpy())
             dones = terminateds | truncateds
@@ -160,29 +137,19 @@ def train_ppo(
 
         # Compute teacher rewards in one batched forward pass
         if teacher is not None:
-            with torch.no_grad():
-                if noise_input:
-                    flat_obs = obs_buf.reshape(batch_size, grid_size, grid_size, input_dim)
-                else:
-                    flat_obs = obs_buf.reshape(batch_size, grid_size, grid_size)
-                flat_acts = act_buf.reshape(batch_size)
-                all_teacher_lp = teacher.get_log_probs(flat_obs)  # (batch_size, 4)
-                step_logprobs = all_teacher_lp.gather(1, flat_acts.unsqueeze(1)).squeeze(1)
-                step_logprobs = step_logprobs.reshape(num_steps, num_envs)
-
-            if config.step_level_reward:
-                reward_buf[:] = step_logprobs
-            else:
-                # Trajectory-level: assign mean logprob at episode-terminal steps per env
-                step_lp_cpu = step_logprobs.cpu().numpy()
-                done_cpu = done_buf.cpu().numpy()
-                for e in range(num_envs):
-                    ep_start = 0
-                    for t in range(num_steps):
-                        if done_cpu[t, e] > 0.5:
-                            avg_lp = float(step_lp_cpu[ep_start : t + 1, e].mean())
-                            reward_buf[t, e] = avg_lp
-                            ep_start = t + 1
+            reward_buf[:] = compute_teacher_reward(
+                teacher=teacher,
+                obs_buf=obs_buf,
+                act_buf=act_buf,
+                done_buf=done_buf,
+                reward_config=config.reward,
+                num_steps=num_steps,
+                num_envs=num_envs,
+                batch_size=batch_size,
+                grid_size=grid_size,
+                noise_input=noise_input,
+                input_dim=input_dim,
+            )
 
         # Bootstrap value for last step
         with torch.no_grad():
@@ -190,9 +157,9 @@ def train_ppo(
                 next_obs = torch.randn(num_envs, grid_size, grid_size, input_dim, device=device)
             else:
                 next_obs = torch.from_numpy(obs).to(device)
-            next_value = agent.get_value(next_obs)  # (num_envs,)
+            next_value = agent.get_value(next_obs)
 
-        advantages, returns = compute_gae(reward_buf, value_buf, done_buf, next_value, config.gamma, config.gae_lambda)
+        advantages, returns = compute_gae(reward_buf, value_buf, done_buf, next_value, tc.gamma, tc.gae_lambda)
 
         # Flatten (num_steps, num_envs) -> (batch_size,) for minibatch updates
         if noise_input:
@@ -211,7 +178,7 @@ def train_ppo(
 
         # PPO update
         indices = np.arange(batch_size)
-        for epoch in range(config.update_epochs):
+        for epoch in range(tc.update_epochs):
             np.random.shuffle(indices)
             for start in range(0, batch_size, minibatch_size):
                 mb = indices[start : start + minibatch_size]
@@ -229,7 +196,7 @@ def train_ppo(
 
                 # Clipped surrogate
                 pg_loss1 = -mb_adv * ratio
-                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - config.clip_eps, 1 + config.clip_eps)
+                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - tc.clip_eps, 1 + tc.clip_eps)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value loss
@@ -238,11 +205,11 @@ def train_ppo(
                 # Entropy bonus
                 ent_loss = entropy.mean()
 
-                loss = pg_loss - config.entropy_coef * ent_loss + config.value_coef * v_loss
+                loss = pg_loss - tc.entropy_coef * ent_loss + tc.value_coef * v_loss
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), config.max_grad_norm)
+                nn.utils.clip_grad_norm_(agent.parameters(), tc.max_grad_norm)
                 optimizer.step()
 
                 update_pg_losses.append(pg_loss.item())

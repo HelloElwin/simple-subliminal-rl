@@ -1,0 +1,11 @@
+lr: 7e-4
+gamma: 0.99
+gae_lambda: 0.95
+clip_eps: 0.2
+entropy_coef: 0.1
+value_coef: 0.5
+max_grad_norm: 0.5
+update_epochs: 4
+num_minibatches: 4
+num_steps: 128
+num_envs: 128

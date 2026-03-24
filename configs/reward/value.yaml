@@ -1,0 +1,5 @@
+mode: value
+temperature: 1.0
+normalize: false
+clip_min: null
+clip_max: null
