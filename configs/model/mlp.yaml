@@ -1,5 +1,5 @@
 backbone: mlp
-use_embedding: false
+use_embedding: true
 embed_dim: 4
 hidden_dim: 256
 num_hidden_layers: 2

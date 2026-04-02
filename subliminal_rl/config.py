@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 @dataclass
 class ModelConfig:
     backbone: str = "mlp"
-    use_embedding: bool = False
+    use_embedding: bool = True
     embed_dim: int = 4
     hidden_dim: int = 256
     num_hidden_layers: int = 2
