@@ -1,8 +1,8 @@
-backbone: cnn
+backbone: mlp
 use_embedding: true
 embed_dim: 4
 hidden_dim: 256
 num_hidden_layers: 2
-aux_dim: 0
+aux_dim: 3
 freeze_embedding: false
 freeze_layers: 0

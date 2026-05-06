@@ -25,12 +25,14 @@ class ActorCritic(nn.Module):
         use_embedding: bool = False,
         hidden_dim: int = 256,
         num_hidden_layers: int = 2,
+        aux_dim: int = 0,
     ):
         super().__init__()
         self.grid_size = grid_size
         self.num_cell_types = num_cell_types
         self.backbone = backbone
         self.use_embedding = use_embedding
+        self.aux_dim = aux_dim
 
         if use_embedding:
             self.embed = nn.Embedding(num_cell_types, embed_dim)
@@ -74,6 +76,13 @@ class ActorCritic(nn.Module):
             nn.ReLU(),
             layer_init(nn.Linear(hidden_dim, 1), std=1.0),
         )
+        self.aux_head = None
+        if aux_dim > 0:
+            self.aux_head = nn.Sequential(
+                layer_init(nn.Linear(flat_dim, hidden_dim)),
+                nn.ReLU(),
+                layer_init(nn.Linear(hidden_dim, aux_dim), std=0.01),
+            )
 
     def freeze_for_student(self, freeze_embedding: bool = False, freeze_layers: int = 0):
         """Freeze parameters for student training (embedding and/or backbone layers)."""
@@ -144,6 +153,12 @@ class ActorCritic(nn.Module):
         features = self._features(x)
         return torch.log_softmax(self.actor(features), dim=-1)
 
+    def get_aux_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Return auxiliary logits used only for distillation rewards."""
+        if self.aux_head is None:
+            raise ValueError("Auxiliary head is disabled; set model.aux_dim > 0")
+        return self.aux_head(self._features(x))
+
 
 def create_model(
     grid_size: int = 7,
@@ -154,6 +169,7 @@ def create_model(
     embed_dim: int = 4,
     hidden_dim: int = 256,
     num_hidden_layers: int = 2,
+    aux_dim: int = 0,
 ) -> ActorCritic:
     torch.manual_seed(seed)
     model = ActorCritic(
@@ -163,6 +179,7 @@ def create_model(
         embed_dim=embed_dim,
         hidden_dim=hidden_dim,
         num_hidden_layers=num_hidden_layers,
+        aux_dim=aux_dim,
     )
     if device is not None:
         model = model.to(device)

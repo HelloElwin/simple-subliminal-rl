@@ -10,6 +10,7 @@ class ModelConfig:
     embed_dim: int = 4
     hidden_dim: int = 256
     num_hidden_layers: int = 2
+    aux_dim: int = 0
     freeze_embedding: bool = False
     freeze_layers: int = 0
 
@@ -39,7 +40,7 @@ class TrainingConfig:
 
 @dataclass
 class RewardConfig:
-    mode: str = "trajectory"  # trajectory | step | value
+    mode: str = "trajectory"  # trajectory | step | value | aux_mse
     temperature: float = 1.0
     normalize: bool = False
     clip_min: float | None = None
@@ -50,6 +51,8 @@ class RewardConfig:
 class ExperimentConfig:
     teacher_steps: int = 10_000_000
     student_steps: int = 10_000_000
+    student_method: str = "rl"  # rl | aux_distill
+    distill_batch_size: int = 1024
     num_seeds: int = 5
     seed: int = 0
     eval_episodes: int = 1000

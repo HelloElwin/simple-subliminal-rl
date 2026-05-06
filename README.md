@@ -54,6 +54,12 @@ uv run python -m subliminal_rl.run model.use_embedding=true training.lr=3e-4
 # Switch config groups
 uv run python -m subliminal_rl.run model=cnn reward=step
 
+# Auxiliary-logit RL reward
+uv run python -m subliminal_rl.run model=mlp_aux reward=aux_mse
+
+# Supervised auxiliary-logit distillation for the student
+uv run python -m subliminal_rl.run model=mlp_aux experiment.student_method=aux_distill
+
 # Run with all controls
 uv run python -m subliminal_rl.run experiment.controls='[c1,c3,c4,c5]'
 ```
