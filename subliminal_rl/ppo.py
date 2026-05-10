@@ -36,6 +36,7 @@ def train_ppo(
     vec_env: BatchGridEnv,
     total_steps: int,
     config: Config,
+    lr: float,
     teacher: ActorCritic | None = None,
     label: str = "",
     eval_fn: Callable | None = None,
@@ -62,7 +63,7 @@ def train_ppo(
 
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, agent.parameters()),
-        lr=tc.lr,
+        lr=lr,
         eps=1e-5,
     )
 
@@ -106,9 +107,8 @@ def train_ppo(
     for update in tqdm(range(num_updates), desc=label, unit="update"):
         # LR annealing
         frac = 1.0 - update / num_updates
-        lr = tc.lr * frac
         for pg in optimizer.param_groups:
-            pg["lr"] = lr
+            pg["lr"] = lr * frac
 
         # Collect rollout
         for step in range(num_steps):

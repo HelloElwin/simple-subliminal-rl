@@ -499,18 +499,33 @@ def make_env_b(
     goal_rewards: dict[CellType, float] | None = None,
     rng: np.random.Generator | None = None,
     filler_density: float = 0.5,
+    shared_vocab: bool = False,
 ) -> GridEnv:
-    """Create Env B: random walls + ALPHA, BETA, GAMMA goals. No colored goals."""
-    if goal_rewards is None:
-        goal_rewards = {CellType.ALPHA: 0.0, CellType.BETA: 0.0, CellType.GAMMA: 0.0}
+    """Create Env B.
+
+    Default: ALPHA/BETA/GAMMA goals and FILLERS_B (disjoint vocabulary from Env A).
+    When shared_vocab=True: BLUE/GREEN goals and FILLERS_A — i.e. Env A's vocabulary
+    minus RED. This is the LM-subliminal-faithful setup where the trait token (RED)
+    is the only token filtered out of the student's data.
+    """
+    if shared_vocab:
+        goal_types = [CellType.BLUE, CellType.GREEN]
+        filler_types = FILLERS_A
+        if goal_rewards is None:
+            goal_rewards = {CellType.BLUE: 0.0, CellType.GREEN: 0.0}
+    else:
+        goal_types = [CellType.ALPHA, CellType.BETA, CellType.GAMMA]
+        filler_types = FILLERS_B
+        if goal_rewards is None:
+            goal_rewards = {CellType.ALPHA: 0.0, CellType.BETA: 0.0, CellType.GAMMA: 0.0}
     return GridEnv(
         grid_size=grid_size,
         wall_density=wall_density,
-        goal_types=[CellType.ALPHA, CellType.BETA, CellType.GAMMA],
+        goal_types=goal_types,
         goal_rewards=goal_rewards,
         max_steps=max_steps,
         rng=rng,
-        filler_types=FILLERS_B,
+        filler_types=filler_types,
         filler_density=filler_density,
     )
 
@@ -543,13 +558,25 @@ def make_vec_env_b(
     goal_rewards: dict[CellType, float] | None = None,
     base_seed: int = 0,
     filler_density: float = 0.5,
+    shared_vocab: bool = False,
 ) -> BatchGridEnv:
-    """Create batched Env B with num_envs instances."""
-    if goal_rewards is None:
-        goal_rewards = {CellType.ALPHA: 0.0, CellType.BETA: 0.0, CellType.GAMMA: 0.0}
+    """Create batched Env B with num_envs instances.
+
+    See make_env_b for the meaning of shared_vocab.
+    """
+    if shared_vocab:
+        goal_types = [CellType.BLUE, CellType.GREEN]
+        filler_types = FILLERS_A
+        if goal_rewards is None:
+            goal_rewards = {CellType.BLUE: 0.0, CellType.GREEN: 0.0}
+    else:
+        goal_types = [CellType.ALPHA, CellType.BETA, CellType.GAMMA]
+        filler_types = FILLERS_B
+        if goal_rewards is None:
+            goal_rewards = {CellType.ALPHA: 0.0, CellType.BETA: 0.0, CellType.GAMMA: 0.0}
     return BatchGridEnv(
         num_envs=num_envs, grid_size=grid_size, wall_density=wall_density,
-        goal_types=[CellType.ALPHA, CellType.BETA, CellType.GAMMA],
+        goal_types=goal_types,
         goal_rewards=goal_rewards, max_steps=max_steps, base_seed=base_seed,
-        filler_types=FILLERS_B, filler_density=filler_density,
+        filler_types=filler_types, filler_density=filler_density,
     )

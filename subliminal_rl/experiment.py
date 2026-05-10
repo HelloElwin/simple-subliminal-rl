@@ -173,6 +173,7 @@ def _make_vec_env_b(config: Config, seed: int, goal_rewards: dict[CellType, floa
         goal_rewards=goal_rewards,
         base_seed=seed,
         filler_density=ec.filler_density,
+        shared_vocab=ec.shared_vocab,
     )
 
 
@@ -218,6 +219,8 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
 
     # Train RED teacher on Env A
     print("\n[Teacher] Training RED teacher on Env A...")
+    teacher_lr = config.training.teacher_lr or config.training.lr
+    student_lr = config.training.student_lr or config.training.lr
     red_teacher_rewards = {CellType.RED: 1.0, CellType.BLUE: 0.0, CellType.GREEN: 0.0}
     vec_env_a = _make_vec_env_a(config, seed, red_teacher_rewards)
     eval_fn = make_eval_fn(config, device, np.random.default_rng(seed), torch_seed=seed)
@@ -229,6 +232,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
         label="RED teacher",
         eval_fn=eval_fn,
         device=device,
+        lr=teacher_lr,
     )
     results["Teacher (RED)"] = _evaluate_model(red_teacher, config, seed, device)
     curves["Teacher (RED)"] = teacher_log
@@ -238,6 +242,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
     vec_env_b = _make_vec_env_b(config, seed)
     eval_fn = make_eval_fn(config, device, np.random.default_rng(seed), torch_seed=seed)
     student = _prepare_student(config, theta_0)
+    set_seed(seed + 12345)
     student, student_log = train_ppo(
         student,
         vec_env_b,
@@ -248,6 +253,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
         eval_fn=eval_fn,
         device=device,
         noise_input=noise_input,
+        lr=student_lr,
     )
     results["Student (same init)"] = _evaluate_model(student, config, seed, device)
     curves["Student (same init)"] = student_log
@@ -259,6 +265,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
         vec_env_b_c1 = _make_vec_env_b(config, seed)
         eval_fn = make_eval_fn(config, device, np.random.default_rng(seed), torch_seed=seed)
         student_c1 = _prepare_student(config, theta_0_prime)
+        set_seed(seed + 12345)
         student_c1, c1_log = train_ppo(
             student_c1,
             vec_env_b_c1,
@@ -269,6 +276,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
             eval_fn=eval_fn,
             device=device,
             noise_input=noise_input,
+            lr=student_lr,
         )
         results["C1: Diff init"] = _evaluate_model(student_c1, config, seed, device)
         curves["C1: Diff init"] = c1_log
@@ -287,11 +295,13 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
             label="Sym teacher",
             eval_fn=eval_fn_sym,
             device=device,
+            lr=teacher_lr,
         )
         print("  Training student from symmetric teacher...")
         vec_env_b_c3 = _make_vec_env_b(config, seed)
         eval_fn = make_eval_fn(config, device, np.random.default_rng(seed), torch_seed=seed)
         student_c3 = _prepare_student(config, theta_0)
+        set_seed(seed + 12345)
         student_c3, c3_log = train_ppo(
             student_c3,
             vec_env_b_c3,
@@ -302,6 +312,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
             eval_fn=eval_fn,
             device=device,
             noise_input=noise_input,
+            lr=student_lr,
         )
         results["C3: Sym teacher"] = _evaluate_model(student_c3, config, seed, device)
         curves["C3: Sym teacher"] = c3_log
@@ -320,11 +331,13 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
             label="BLUE teacher",
             eval_fn=eval_fn_blue,
             device=device,
+            lr=teacher_lr,
         )
         print("  Training student from BLUE teacher...")
         vec_env_b_c4 = _make_vec_env_b(config, seed)
         eval_fn = make_eval_fn(config, device, np.random.default_rng(seed), torch_seed=seed)
         student_c4 = _prepare_student(config, theta_0)
+        set_seed(seed + 12345)
         student_c4, c4_log = train_ppo(
             student_c4,
             vec_env_b_c4,
@@ -335,6 +348,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
             eval_fn=eval_fn,
             device=device,
             noise_input=noise_input,
+            lr=student_lr,
         )
         results["C4: BLUE teacher"] = _evaluate_model(student_c4, config, seed, device)
         curves["C4: BLUE teacher"] = c4_log
@@ -342,12 +356,14 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
     # C5: Env reward only (no teacher)
     if "c5" in controls_set:
         print("\n[C5] Training student with env reward only (no teacher)...")
-        vec_env_b_c5 = _make_vec_env_b(
-            config, seed,
-            goal_rewards={CellType.ALPHA: 1.0, CellType.BETA: 1.0, CellType.GAMMA: 1.0},
-        )
+        if config.env.shared_vocab:
+            c5_rewards = {CellType.BLUE: 1.0, CellType.GREEN: 1.0}
+        else:
+            c5_rewards = {CellType.ALPHA: 1.0, CellType.BETA: 1.0, CellType.GAMMA: 1.0}
+        vec_env_b_c5 = _make_vec_env_b(config, seed, goal_rewards=c5_rewards)
         eval_fn = make_eval_fn(config, device, np.random.default_rng(seed), torch_seed=seed)
         student_c5 = _prepare_student(config, theta_0)
+        set_seed(seed + 12345)
         student_c5, c5_log = train_ppo(
             student_c5,
             vec_env_b_c5,
@@ -357,6 +373,7 @@ def run_experiment(seed: int, config: Config, controls: list[str] | None = None)
             eval_fn=eval_fn,
             device=device,
             noise_input=noise_input,
+            lr=student_lr,
         )
         results["C5: Env reward only"] = _evaluate_model(student_c5, config, seed, device)
         curves["C5: Env reward only"] = c5_log

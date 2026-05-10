@@ -2,3 +2,4 @@ grid_size: 7
 wall_density: 0.1
 filler_density: 0.5
 max_episode_steps: 50
+shared_vocab: false

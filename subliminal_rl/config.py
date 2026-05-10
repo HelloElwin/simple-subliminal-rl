@@ -20,11 +20,14 @@ class EnvConfig:
     wall_density: float = 0.1
     filler_density: float = 0.5
     max_episode_steps: int = 50
+    shared_vocab: bool = False
 
 
 @dataclass
 class TrainingConfig:
     lr: float = 7e-4
+    teacher_lr: float | None = None
+    student_lr: float | None = None
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2

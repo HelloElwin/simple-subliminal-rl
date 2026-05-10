@@ -1,4 +1,6 @@
 lr: 7e-4
+teacher_lr: null
+student_lr: null
 gamma: 0.99
 gae_lambda: 0.95
 clip_eps: 0.2
